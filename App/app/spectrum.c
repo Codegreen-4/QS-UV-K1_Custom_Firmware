@@ -768,11 +768,11 @@ static void ToggleRX(bool on)
         // Set LED after RX is fully configured and signal is present
         SetBandLed(fMeasure, false, true);
     #ifdef ENABLE_FEAT_N7SIX_SPECTRUM
-        listenT = 20; // Reduced delay for faster response
+        listenT = 2; // Very short startup hold for real-time response
         BK4819_WriteRegister(0x43, listenBWRegValues[settings.listenBw]);
         setTailFoundInterrupt();
     #else
-        listenT = 100; // Reduced delay for faster response
+        listenT = 5; // Short startup hold for non-N7SIX builds
         BK4819_WriteRegister(0x43, listenBWRegValues[settings.listenBw]);
     #endif
     }
@@ -994,6 +994,9 @@ static void UpdatePeakInfo()
     }
 }
 
+// Forward declaration so older functions can trigger immediate waterfall updates
+static void UpdateWaterfall(void);
+
 static void SetRssiHistory(uint16_t idx, uint16_t rssi)
 {
 #ifdef ENABLE_SCAN_RANGES
@@ -1009,10 +1012,24 @@ static void SetRssiHistory(uint16_t idx, uint16_t rssi)
             rssiHistory[i] = rssi;
         }
         rssiHistory[(i + 1) % 128] = 0;
+        // Adaptive waterfall update: throttle when not actively listening
+        if (currentState == SPECTRUM)
+        {
+            static uint8_t wf_counter = 0;
+            uint8_t throttle = (isListening || IsPeakOverLevel()) ? 1 : 2; // 1=every sample, 2=every other
+            if (++wf_counter >= throttle) { wf_counter = 0; UpdateWaterfall(); }
+        }
         return;
     }
 #endif
     rssiHistory[idx] = rssi;
+    // Adaptive waterfall update: throttle when not actively listening
+    if (currentState == SPECTRUM)
+    {
+        static uint8_t wf_counter2 = 0;
+        uint8_t throttle2 = (isListening || IsPeakOverLevel()) ? 1 : 2;
+        if (++wf_counter2 >= throttle2) { wf_counter2 = 0; UpdateWaterfall(); }
+    }
 }
 
 /**
@@ -2353,13 +2370,7 @@ static void UpdateScan()
 
     UpdatePeakInfo();
     
-    // Update waterfall every 2 scans for even faster professional-style updates (50% faster)
-    static uint8_t waterfallUpdateCounter = 0;
-    if (++waterfallUpdateCounter >= 2)
-    {
-        UpdateWaterfall();
-        waterfallUpdateCounter = 0;
-    }
+    // Waterfall timing is controlled centrally from SetRssiHistory()
     
     if (IsPeakOverLevel())
     {
@@ -2404,7 +2415,6 @@ static void UpdateListening()
     if (listenT)
     {
         listenT--;
-        SYSTEM_DelayMs(1);
         return;
     }
 #else
@@ -2413,7 +2423,6 @@ static void UpdateListening()
     if (listenT)
     {
         listenT--;
-        SYSTEM_DelayMs(1);
         return;
     }
 #endif
@@ -2423,12 +2432,7 @@ static void UpdateListening()
         BK4819_WriteRegister(0x43, GetBWRegValueForScan());
         Measure();
         BK4819_WriteRegister(0x43, listenBWRegValues[settings.listenBw]);
-        static uint8_t waterfallUpdateCounter = 0;
-        if (++waterfallUpdateCounter >= 2)
-        {
-            UpdateWaterfall();
-            waterfallUpdateCounter = 0;
-        }
+        // Waterfall update throttling handled by SetRssiHistory()
     }
     else
     {
@@ -2438,19 +2442,21 @@ static void UpdateListening()
     peak.rssi = scanInfo.rssi;
     redrawScreen = true;
 
-#ifdef ENABLE_FEAT_N7SIX_SPECTRUM
+    #ifdef ENABLE_FEAT_N7SIX_SPECTRUM
     if ((IsPeakOverLevel() && !tailFound) || monitorMode)
     {
-        listenT = 100;
+        // Shorter hold time for real-time RX responsiveness
+        listenT = 20;
         return;
     }
-#else
+    #else
     if (IsPeakOverLevel() || monitorMode)
     {
-        listenT = 1000;
+        // Reduced from 1000 -> 200 for faster response
+        listenT = 200;
         return;
     }
-#endif
+    #endif
 
     ToggleRX(false);
     ResetScanStats();
