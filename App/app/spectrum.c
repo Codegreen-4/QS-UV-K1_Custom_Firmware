@@ -1552,10 +1552,11 @@ static void DrawSpectrumCurve(const uint16_t *smoothed, uint8_t bars)
         uint8_t y = Rssi2Y(smoothed[i]);
         if (i > 0)
         {
-            // Draw a line between previous and current point (simple Bresenham)
+            // Draw a line between previous and current point (simple Bresenham-like)
             int dx = x - prev_x;
             int dy = y - prev_y;
             int steps = (dx > 0) ? dx : -dx;
+            if (steps == 0) steps = 1;
             for (int s = 1; s <= steps; ++s)
             {
                 uint8_t px = prev_x + (dx * s) / steps;
@@ -1587,18 +1588,65 @@ static void DrawSpectrumEnhanced(void)
         }
     }
 
-    // Draw main spectrum curve
-    DrawSpectrumCurve(smoothed, bars);
+    // 'Sugar 1' weak-signal mapping: boosts low levels for better visibility
+    static const uint8_t sugar1_map[16] = { 0, 4, 5, 7, 8, 9, 9, 10, 11, 12, 12, 13, 13, 14, 14, 15 };
+    uint16_t displayRssi[SPECTRUM_MAX_STEPS];
 
-    // Draw peak hold trace (dotted line)
+    // Compute min/max across smoothed values for adaptive mapping
+    uint16_t minRssi = 65535, maxRssi = 0, valid = 0;
     for (uint8_t i = 0; i < bars; ++i) {
-        if ((i % 2) == 0) { // Dotted effect
-            uint8_t x = (i * 128) / bars;
-            uint8_t y = Rssi2Y(peakHold[i]);
-            PutPixel(x, y, true);
+        uint16_t r = smoothed[i];
+        if (r != RSSI_MAX_VALUE && r != 0) {
+            if (r < minRssi) minRssi = r;
+            if (r > maxRssi) maxRssi = r;
+            valid++;
         }
     }
-#else
+    if (valid == 0) { minRssi = 0; maxRssi = 1; }
+    uint16_t range = (maxRssi > minRssi) ? (maxRssi - minRssi) : 1;
+
+    for (uint8_t i = 0; i < bars; ++i) {
+        uint16_t r = smoothed[i];
+        uint8_t level = 0;
+        if (r == RSSI_MAX_VALUE || r == 0) {
+            level = 0;
+        } else {
+            level = (uint8_t)(((r - minRssi) * 15) / range);
+            if (level > 15) level = 15;
+        }
+
+        // Apply sugar1 mapping when listening
+        uint8_t mappedLevel = isListening ? sugar1_map[level] : level;
+
+        // Optionally emphasize strong signals slightly (quadratic boost)
+        uint8_t boosted = (uint8_t)((mappedLevel * mappedLevel) / 15);
+        if (boosted > 15) boosted = 15;
+
+        // Convert back to RSSI space for drawing
+        displayRssi[i] = minRssi + (boosted * range) / 15;
+    }
+
+    // Draw main spectrum curve using mapped/boosted RSSI values
+    DrawSpectrumCurve(displayRssi, bars);
+
+    // Draw peak hold trace (dotted line) using mapped peakHold values
+    for (uint8_t i = 0; i < bars; ++i) {
+        if ((i % 2) == 0) { // Dotted effect
+            uint8_t level = 0;
+            if (peakHold[i] != RSSI_MAX_VALUE && peakHold[i] != 0) {
+                level = (uint8_t)(((peakHold[i] - minRssi) * 15) / range);
+                if (level > 15) level = 15;
+            }
+            uint8_t mappedLevel = isListening ? sugar1_map[level] : level;
+            uint8_t boosted = (uint8_t)((mappedLevel * mappedLevel) / 15);
+            if (boosted > 15) boosted = 15;
+            uint16_t drawRssi = minRssi + (boosted * range) / 15;
+            uint8_t x = (i * 128) / bars;
+            uint8_t y = Rssi2Y(drawRssi);
+            PutPixel(x, y, true);
+        }
+        }
+    #else
     // Fallback for systems without enhanced features
     for (uint8_t x = 0; x < 128; ++x)
     {
