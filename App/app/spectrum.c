@@ -2352,33 +2352,56 @@ static void NextScanStep()
 
 static void UpdateScan()
 {
-    Scan();
+    Scan(); // Fetches fresh RSSI measurement for the current step (scanInfo.i)
 
+    // --- MOUNTAIN EFFECT: ATTACK & DECAY LOGIC ---
+    if (scanInfo.i < scanInfo.measurementsCount)
+    {
+        uint8_t oldRssi = rssiHistory[scanInfo.i];
+        
+        if (scanInfo.rssi > oldRssi) 
+        {
+            // Attack: Signal is rising. Update immediately for real-time response.
+            rssiHistory[scanInfo.i] = scanInfo.rssi; 
+        } 
+        else 
+        {
+            // Decay: Signal is dropping. Fall back slowly to create the "mountain" fade.
+            // (70% old value + 30% new value) / 10
+            rssiHistory[scanInfo.i] = (uint8_t)((oldRssi * 7 + scanInfo.rssi * 3) / 10);
+        }
+    }
+
+    // Continue to next frequency step until sweep is done
     if (scanInfo.i < scanInfo.measurementsCount)
     {
         NextScanStep();
         return;
     }
 
-    if (! (scanInfo.measurementsCount >> 7)) // if (scanInfo.measurementsCount < 128)
+    // --- SWEEP COMPLETE ---
+    
+    // Clear trailing history if scan count is less than 128 (memory cleanup)
+    if (!(scanInfo.measurementsCount >> 7)) 
+    {
         memset(&rssiHistory[scanInfo.measurementsCount], 0,
-               sizeof(rssiHistory) - scanInfo.measurementsCount * sizeof(rssiHistory[0]));
+               sizeof(rssiHistory) - (scanInfo.measurementsCount * sizeof(rssiHistory[0])));
+    }
 
-    redrawScreen = true;
+    redrawScreen = true;   // Trigger UI refresh
     preventKeypress = false;
 
-    UpdatePeakInfo();
+    UpdatePeakInfo();      // Recalculate which frequency is the strongest
     
-    // Waterfall timing is controlled centrally from SetRssiHistory()
-    
+    // Check if the current peak is strong enough to trigger listening (RX) mode
     if (IsPeakOverLevel())
     {
         ToggleRX(true);
         TuneToPeak();
-        return;
+        return; 
     }
 
-    newScanStart = true;
+    newScanStart = true;   // Ready to start a fresh sweep from the start frequency
 }
 
 static void UpdateStill()
@@ -2407,6 +2430,8 @@ static void UpdateStill()
 static void UpdateListening()
 {
     preventKeypress = false;
+    
+    // --- 1. HANDLE TIMERS & TAIL DETECTION ---
 #ifdef ENABLE_FEAT_N7SIX_SPECTRUM
     bool tailFound = checkIfTailFound();
     if (tailFound)
@@ -2426,37 +2451,40 @@ static void UpdateListening()
     }
 #endif
 
-    if (currentState == SPECTRUM)
-    {
-        BK4819_WriteRegister(0x43, GetBWRegValueForScan());
-        Measure();
-        BK4819_WriteRegister(0x43, listenBWRegValues[settings.listenBw]);
-        // Waterfall update throttling handled by SetRssiHistory()
-    }
-    else
-    {
-        Measure();
-    }
+    // --- 2. THE HELICOPTER FIX (RF MEASUREMENT) ---
+    // REMOVED: BK4819_WriteRegister(0x43, ...) 
+    // Changing bandwidth registers creates a sharp 'pop' or 'click' in the audio.
+    // We now measure using the current listening bandwidth for silence.
+    Measure();
 
     peak.rssi = scanInfo.rssi;
-    redrawScreen = true;
 
-    #ifdef ENABLE_FEAT_N7SIX_SPECTRUM
+    // --- 3. THE HELICOPTER FIX (SCREEN THROTTLING) ---
+    // Only redraw the screen every 8th cycle (approx. every 100-160ms) 
+    // while listening to reduce SPI bus noise in the speaker.
+    static uint8_t quietCounter = 0;
+    if (++quietCounter >= 8) 
+    {
+        redrawScreen = true;
+        quietCounter = 0;
+    }
+
+    // --- 4. STATE MANAGEMENT & SQUELCH ---
+#ifdef ENABLE_FEAT_N7SIX_SPECTRUM
     if ((IsPeakOverLevel() && !tailFound) || monitorMode)
     {
-        // Shorter hold time for real-time RX responsiveness
         listenT = 20;
         return;
     }
-    #else
+#else
     if (IsPeakOverLevel() || monitorMode)
     {
-        // Reduced from 1000 -> 200 for faster response
         listenT = 200;
         return;
     }
-    #endif
+#endif
 
+    // If we reached here, signal is lost
     ToggleRX(false);
     ResetScanStats();
 }
