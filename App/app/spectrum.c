@@ -1,49 +1,3 @@
-#include "frequencies.h"
-#include "driver/bk4819.h"
-
-// Utility: Set LED color based on frequency and TX/RX state
-// hasSignal: true if signal is present (RSSI above threshold), false if no signal
-static void SetBandLed(uint32_t freq, bool isTx, bool hasSignal)
-{
-    // If no signal, turn both LEDs OFF and return
-    if (!hasSignal) {
-        BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, false);
-        BK4819_ToggleGpioOut(BK4819_GPIO6_PIN2_GREEN, false);
-        return;
-    }
-
-    // Always turn both LEDs OFF first to avoid stuck states
-    BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, false);
-    BK4819_ToggleGpioOut(BK4819_GPIO6_PIN2_GREEN, false);
-
-    FREQUENCY_Band_t band = FREQUENCY_GetBand(freq);
-    if (isTx) {
-        // TX: Always RED only
-        BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, true);
-    } else {
-        // RX: VHF = GREEN only, UHF = RED+GREEN, else RED only
-        if (band == BAND3_137MHz || band == BAND4_174MHz) {
-            BK4819_ToggleGpioOut(BK4819_GPIO6_PIN2_GREEN, true);
-        } else if (band == BAND6_400MHz) {
-            BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, true);
-            BK4819_ToggleGpioOut(BK4819_GPIO6_PIN2_GREEN, true);
-        } else {
-            BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, true);
-        }
-    }
-}
-
-#define PEAK_HOLD_DECAY 2
-
-
-#include "ui/main.h"
-
-// ...existing code...
-
-// --- Peak Hold Buffer ---
-// Place after SPECTRUM_MAX_STEPS and other buffer definitions
-
-
 /**
  * @file spectrum.c
  * @brief Professional-grade Spectrum Analyzer for QS-UV-K1 Radio
@@ -98,6 +52,51 @@ static void SetBandLed(uint32_t freq, bool isTx, bool hasSignal)
  *     See the License for the specific language governing permissions and
  *     limitations under the License.
  */
+
+#include "frequencies.h"
+#include "driver/bk4819.h"
+
+// Utility: Set LED color based on frequency and TX/RX state
+// hasSignal: true if signal is present (RSSI above threshold), false if no signal
+static void SetBandLed(uint32_t freq, bool isTx, bool hasSignal)
+{
+    // If no signal, turn both LEDs OFF and return
+    if (!hasSignal) {
+        BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, false);
+        BK4819_ToggleGpioOut(BK4819_GPIO6_PIN2_GREEN, false);
+        return;
+    }
+
+    // Always turn both LEDs OFF first to avoid stuck states
+    BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, false);
+    BK4819_ToggleGpioOut(BK4819_GPIO6_PIN2_GREEN, false);
+
+    FREQUENCY_Band_t band = FREQUENCY_GetBand(freq);
+    if (isTx) {
+        // TX: Always RED only
+        BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, true);
+    } else {
+        // RX: VHF = GREEN only, UHF = RED+GREEN, else RED only
+        if (band == BAND3_137MHz || band == BAND4_174MHz) {
+            BK4819_ToggleGpioOut(BK4819_GPIO6_PIN2_GREEN, true);
+        } else if (band == BAND6_400MHz) {
+            BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, true);
+            BK4819_ToggleGpioOut(BK4819_GPIO6_PIN2_GREEN, true);
+        } else {
+            BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, true);
+        }
+    }
+}
+
+#define PEAK_HOLD_DECAY 2
+
+
+#include "ui/main.h"
+
+// ...existing code...
+
+// --- Peak Hold Buffer ---
+// Place after SPECTRUM_MAX_STEPS and other buffer definitions
 
 #include <string.h>
 
