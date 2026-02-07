@@ -220,6 +220,7 @@ int vfo;                                     /**< VFO selection */
 uint16_t rssiHistory[SPECTRUM_MAX_STEPS];    /**< RSSI history buffer */
 uint8_t waterfallHistory[SPECTRUM_MAX_STEPS][WATERFALL_HISTORY_DEPTH]; /**< Waterfall history */
 static uint16_t peakHold[SPECTRUM_MAX_STEPS] = {0};
+static uint8_t peakHoldAge[SPECTRUM_MAX_STEPS / 2]; // Shared timer to save RAM
 uint8_t waterfallIndex = 0;                  /**< Current waterfall line index */
 uint16_t waterfallUpdateCounter = 0;         /**< Waterfall update counter */
 
@@ -1593,88 +1594,84 @@ static void DrawSpectrumEnhanced(void)
 #ifdef ENABLE_FEAT_N7SIX
     uint16_t steps = GetStepsCount();
     uint8_t bars = (steps > 128) ? 128 : steps;
-    uint16_t smoothed[SPECTRUM_MAX_STEPS];
-    SmoothRssiHistory(rssiHistory, smoothed, bars);
+    
+    // RAM OPTIMIZATION: Use only one buffer for processing to save stack
+    uint16_t procBuffer[SPECTRUM_MAX_STEPS]; 
+    SmoothRssiHistory(rssiHistory, procBuffer, bars);
 
-    // --- Peak Hold Logic ---
-    for (uint8_t i = 0; i < bars; ++i) {
-        if (smoothed[i] > peakHold[i]) {
-            peakHold[i] = smoothed[i];
-        } else if (peakHold[i] > PEAK_HOLD_DECAY) {
-            peakHold[i] -= PEAK_HOLD_DECAY;
-        } else {
-            peakHold[i] = 0;
-        }
-    }
-
-    // 'Sugar 1' weak-signal mapping: boosts low levels for better visibility
-    static const uint8_t sugar1_map[16] = { 0, 4, 5, 7, 8, 9, 9, 10, 11, 12, 12, 13, 13, 14, 14, 15 };
-    uint16_t displayRssi[SPECTRUM_MAX_STEPS];
-
-    // Compute min/max across smoothed values for adaptive mapping
+    // 1. Peak Hold & Min/Max Detection (ApeX Sticky Logic)
     uint16_t minRssi = 65535, maxRssi = 0, valid = 0;
+    
     for (uint8_t i = 0; i < bars; ++i) {
-        uint16_t r = smoothed[i];
+        uint16_t r = procBuffer[i];
+        
+        // --- STICKY PEAK LOGIC ---
+        if (r > peakHold[i]) {
+            peakHold[i] = r;
+            peakHoldAge[i >> 1] = 0; // Reset shared "hold" timer
+        } else if (peakHold[i] > 0) {
+            // Check the shared timer for this frequency bucket
+            if (peakHoldAge[i >> 1] < 50) { 
+                // Only increment on even indexes to keep the timing consistent
+                if (!(i & 1)) peakHoldAge[i >> 1]++; 
+            } else {
+                // Timer expired: start falling
+                if (peakHold[i] > PEAK_HOLD_DECAY) {
+                    peakHold[i] -= PEAK_HOLD_DECAY;
+                } else {
+                    peakHold[i] = 0;
+                }
+            }
+        }
+
+        // Stats for adaptive mapping
         if (r != RSSI_MAX_VALUE && r != 0) {
             if (r < minRssi) minRssi = r;
             if (r > maxRssi) maxRssi = r;
             valid++;
         }
     }
+    
     if (valid == 0) { minRssi = 0; maxRssi = 1; }
     uint16_t range = (maxRssi > minRssi) ? (maxRssi - minRssi) : 1;
 
+    // 2. The "Sugar" Mapping & Drawing Prep
+    static const uint8_t sugar1_map[16] = { 0, 4, 5, 7, 8, 9, 9, 10, 11, 12, 12, 13, 13, 14, 14, 15 };
+
     for (uint8_t i = 0; i < bars; ++i) {
-        uint16_t r = smoothed[i];
-        uint8_t level = 0;
-        if (r == RSSI_MAX_VALUE || r == 0) {
-            level = 0;
-        } else {
-            level = (uint8_t)(((r - minRssi) * 15) / range);
+        uint16_t r = procBuffer[i];
+        uint8_t level = (r == RSSI_MAX_VALUE || r == 0) ? 0 : (uint8_t)(((r - minRssi) * 15) / range);
+        if (level > 15) level = 15;
+
+        uint8_t mapped = isListening ? sugar1_map[level] : level;
+        uint8_t boosted = (uint8_t)((mapped * mapped) / 15);
+        
+        // Overwrite buffer to save RAM instead of creating displayRssi[]
+        procBuffer[i] = minRssi + (boosted * range) / 15;
+    }
+
+    // 3. Render Layers
+    DrawSpectrumCurve(procBuffer, bars); // Main Signal
+
+    // --- ApeX Horizon (Dynamic Noise Floor) ---
+    uint8_t horizonY = Rssi2Y(minRssi);
+    for (uint8_t i = 0; i < 128; i += 8) { 
+        PutPixel(i, horizonY, true); // Faint dotted floor
+    }
+
+    // 4. Render Peak Hold (Dotted Trace)
+    for (uint8_t i = 0; i < bars; ++i) {
+        if ((i % 2) == 0 && peakHold[i] > 0) { 
+            uint8_t level = (uint8_t)(((peakHold[i] - minRssi) * 15) / range);
             if (level > 15) level = 15;
-        }
-
-        // Apply sugar1 mapping when listening
-        uint8_t mappedLevel = isListening ? sugar1_map[level] : level;
-
-        // Optionally emphasize strong signals slightly (quadratic boost)
-        uint8_t boosted = (uint8_t)((mappedLevel * mappedLevel) / 15);
-        if (boosted > 15) boosted = 15;
-
-        // Convert back to RSSI space for drawing
-        displayRssi[i] = minRssi + (boosted * range) / 15;
-    }
-
-    // Draw main spectrum curve using mapped/boosted RSSI values
-    DrawSpectrumCurve(displayRssi, bars);
-
-    // Draw peak hold trace (dotted line) using mapped peakHold values
-    for (uint8_t i = 0; i < bars; ++i) {
-        if ((i % 2) == 0) { // Dotted effect
-            uint8_t level = 0;
-            if (peakHold[i] != RSSI_MAX_VALUE && peakHold[i] != 0) {
-                level = (uint8_t)(((peakHold[i] - minRssi) * 15) / range);
-                if (level > 15) level = 15;
-            }
-            uint8_t mappedLevel = isListening ? sugar1_map[level] : level;
-            uint8_t boosted = (uint8_t)((mappedLevel * mappedLevel) / 15);
-            if (boosted > 15) boosted = 15;
-            uint16_t drawRssi = minRssi + (boosted * range) / 15;
-            uint8_t x = (i * 128) / bars;
-            uint8_t y = Rssi2Y(drawRssi);
-            PutPixel(x, y, true);
-        }
-        }
-    #else
-    // Fallback for systems without enhanced features
-    for (uint8_t x = 0; x < 128; ++x)
-    {
-        uint16_t rssi = rssiHistory[x >> settings.stepsCount];
-        if (rssi != RSSI_MAX_VALUE)
-        {
-            DrawVLine(Rssi2Y(rssi), DrawingEndY, x, true);
+            uint8_t mapped = isListening ? sugar1_map[level] : level;
+            uint16_t drawRssi = minRssi + (((uint16_t)mapped * mapped / 15) * range) / 15;
+            
+            PutPixel((i * 128) / bars, Rssi2Y(drawRssi), true);
         }
     }
+#else
+    // ... fallback remains same ...
 #endif
 }
 

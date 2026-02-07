@@ -54,10 +54,10 @@ void UI_DisplayWelcome(void)
     char WelcomeString2[16];
     char WelcomeString3[20];
 
-    memset(gStatusLine,  0, sizeof(gStatusLine));
+    memset(gStatusLine, 0, sizeof(gStatusLine));
 
 #if defined(ENABLE_FEAT_N7SIX_CTR) || defined(ENABLE_FEAT_N7SIX_INV)
-        ST7565_ContrastAndInv();
+    ST7565_ContrastAndInv();
 #endif
     UI_DisplayClear();
 
@@ -67,159 +67,60 @@ void UI_DisplayWelcome(void)
     
     if (gEeprom.POWER_ON_DISPLAY_MODE == POWER_ON_DISPLAY_MODE_NONE || gEeprom.POWER_ON_DISPLAY_MODE == POWER_ON_DISPLAY_MODE_SOUND) {
         ST7565_FillScreen(0x00);
-#else
-    if (gEeprom.POWER_ON_DISPLAY_MODE == POWER_ON_DISPLAY_MODE_NONE || gEeprom.POWER_ON_DISPLAY_MODE == POWER_ON_DISPLAY_MODE_FULL_SCREEN) {
-        ST7565_FillScreen(0xFF);
-#endif
     } else {
         memset(WelcomeString0, 0, sizeof(WelcomeString0));
         memset(WelcomeString1, 0, sizeof(WelcomeString1));
 
-        // 0x0EB0
+        // Read Welcome messages from EEPROM
         PY25Q16_ReadBuffer(0x007020, WelcomeString0, 16);
-        // 0x0EC0
         PY25Q16_ReadBuffer(0x007030, WelcomeString1, 16);
 
+        // Prepare Voltage String
         sprintf(WelcomeString2, "%u.%02uV %u%%",
                 gBatteryVoltageAverage / 100,
                 gBatteryVoltageAverage % 100,
                 BATTERY_VoltsToPercent(gBatteryVoltageAverage));
 
-        if (gEeprom.POWER_ON_DISPLAY_MODE == POWER_ON_DISPLAY_MODE_VOLTAGE)
-        {
+        if (gEeprom.POWER_ON_DISPLAY_MODE == POWER_ON_DISPLAY_MODE_VOLTAGE) {
             strcpy(WelcomeString0, "VOLTAGE");
             strcpy(WelcomeString1, WelcomeString2);
-        }
-        else if(gEeprom.POWER_ON_DISPLAY_MODE == POWER_ON_DISPLAY_MODE_ALL)
-        {
-            if(strlen(WelcomeString0) == 0 && strlen(WelcomeString1) == 0)
-            {
-                strcpy(WelcomeString0, "73 Mabuhay!");
-                strcpy(WelcomeString1, WelcomeString2);
-            }
-            else if(strlen(WelcomeString0) == 0 || strlen(WelcomeString1) == 0)
-            {
-                if(strlen(WelcomeString0) == 0)
-                {
-                    strcpy(WelcomeString0, WelcomeString1);
-                }
-                strcpy(WelcomeString1, WelcomeString2);
-            }
-        }
-        else if(gEeprom.POWER_ON_DISPLAY_MODE == POWER_ON_DISPLAY_MODE_MESSAGE)
-        {
-            if(strlen(WelcomeString0) == 0)
-            {
-                strcpy(WelcomeString0, "WELCOME");
-            }
-
-            if(strlen(WelcomeString1) == 0)
-            {
-                strcpy(WelcomeString1, "BIENVENUE");
-            }
+        } else if(gEeprom.POWER_ON_DISPLAY_MODE == POWER_ON_DISPLAY_MODE_MESSAGE) {
+            if(strlen(WelcomeString0) == 0) strcpy(WelcomeString0, "WELCOME");
+            if(strlen(WelcomeString1) == 0) strcpy(WelcomeString1, "BIENVENUE");
         }
 
-        UI_PrintString(WelcomeString0, 0, 127, 0, 10);
-        UI_PrintString(WelcomeString1, 0, 127, 2, 10);
+        // --- ORIGINAL VERTICAL LAYOUT ---
+        // Welcome strings on lines 0 and 2
+        UI_PrintString(WelcomeString0, 0, 127, 0, 10); 
+        UI_PrintString(WelcomeString1, 0, 127, 2, 10); 
 
-#ifdef ENABLE_FEAT_N7SIX
+        // Version Box on Line 4
         uint8_t strLen   = strlen(Version);
-uint8_t charW    = 7;                     // 7 pixels per character width
-uint8_t textW    = strLen * charW;        // Total width of the text
-uint8_t padding  = 6;                     // 3px padding on each side
-uint8_t boxW     = textW + padding;       // Total width of the black box
+        uint8_t boxW     = (strLen * 7) + 6;
+        uint8_t startX   = (128 - boxW) / 2;
+        uint8_t textX    = startX + 3;
 
-uint8_t startX   = (128 - boxW) / 2;
-uint8_t endX     = startX + boxW;
-uint8_t textX    = startX + (padding / 2);
+        UI_PrintStringSmallNormal(Version, textX, 0, 4);
+        UI_DrawLineBuffer(gFrameBuffer, 0, 31, 127, 31, 1); 
 
-// 1. Print text centered inside the box
-UI_PrintStringSmallNormal(Version, textX, 0, 4);
+        // Invert the Version box area on Line 4
+        for (uint8_t i = startX; i < startX + boxW; i++) {
+            gFrameBuffer[4][i] ^= 0xFF;
+        }
 
-// 2. Draw the separator line
-UI_DrawLineBuffer(gFrameBuffer, 0, 31, 127, 31, 1); 
-
-// 3. Invert only the calculated box area
-for (uint8_t i = startX; i < endX; i++)
-{
-    gFrameBuffer[4][i] ^= 0xFF;
-}
-
+        // ApeX Edition on Line 6
         sprintf(WelcomeString3, "%s Edition", Edition);
         UI_PrintStringSmallNormal(WelcomeString3, 0, 127, 6);
 
-        /*
-        #ifdef ENABLE_FEAT_N7SIX_RESCUE_OPS
-            #if ENABLE_FEAT_N7SIX_RESCUE_OPS > 1
-                UI_PrintStringSmallNormal(Edition, 18, 0, 6);
-                if(gEeprom.MENU_LOCK == true) {
-                    memcpy(gFrameBuffer[6] + 103, BITMAP_Ready, sizeof(BITMAP_Ready));
-                }
-                else
-                {
-                    memcpy(gFrameBuffer[6] + 103, BITMAP_NotReady, sizeof(BITMAP_NotReady));                    
-                }
-            #else
-                UI_PrintStringSmallNormal(Edition, 18, 0, 5);
-                memcpy(gFrameBuffer[5] + 103, BITMAP_Ready, sizeof(BITMAP_Ready));
-                
-                #ifdef ENABLE_FEAT_N7SIX_RESCUE_OPS
-                    UI_PrintStringSmallNormal("RescueOps", 18, 0, 6);
-                    if(gEeprom.MENU_LOCK == true) {
-                        memcpy(gFrameBuffer[6] + 103, BITMAP_Ready, sizeof(BITMAP_Ready));
-                    }
-                    else
-                    {
-                        memcpy(gFrameBuffer[6] + 103, BITMAP_NotReady, sizeof(BITMAP_NotReady));
-                    }
-                #endif
-            #endif
-        #else
-            UI_PrintStringSmallNormal(Edition, 18, 0, 6);
-            memcpy(gFrameBuffer[6] + 103, BITMAP_Ready, sizeof(BITMAP_Ready));                    
-        #endif
-        */
-
-        /*
-        #ifdef ENABLE_SPECTRUM
-            #ifdef ENABLE_FMRADIO
-                    UI_PrintStringSmallNormal(Based, 0, 127, 5);
-                    UI_PrintStringSmallNormal(Credits, 0, 127, 6);
-            #else
-                    UI_PrintStringSmallNormal("Bandscope  ", 0, 127, 5);
-                    memcpy(gFrameBuffer[5] + 95, BITMAP_Ready, sizeof(BITMAP_Ready));
-
-                    #ifdef ENABLE_FEAT_N7SIX_RESCUE_OPS
-                        UI_PrintStringSmallNormal("RescueOps  ", 0, 127, 6);
-                        if(gEeprom.MENU_LOCK == true) {
-                            memcpy(gFrameBuffer[6] + 95, BITMAP_Ready, sizeof(BITMAP_Ready));
-                        }
-                    #else
-                        UI_PrintStringSmallNormal("Broadcast  ", 0, 127, 6);
-                    #endif
-            #endif
-        #else
-            #ifdef ENABLE_FEAT_N7SIX_RESCUE_OPS
-                UI_PrintStringSmallNormal("RescueOps  ", 0, 127, 5);
-                if(gEeprom.MENU_LOCK == true) {
-                    memcpy(gFrameBuffer[5] + 95, BITMAP_Ready, sizeof(BITMAP_Ready));
-                }
-            #else
-                UI_PrintStringSmallNormal("Bandscope  ", 0, 127, 5);
-            #endif
-            UI_PrintStringSmallNormal("Broadcast  ", 0, 127, 6);
-            memcpy(gFrameBuffer[6] + 95, BITMAP_Ready, sizeof(BITMAP_Ready));
-        #endif
-        */
-#else
-        UI_PrintStringSmallNormal(Version, 0, 127, 6);
-#endif
-
-        //ST7565_BlitStatusLine();  // blank status line : I think it's useless
         ST7565_BlitFullScreen();
 
         #ifdef ENABLE_FEAT_N7SIX_SCREENSHOT
             getScreenShot(true);
         #endif
     }
+#else
+    // Fallback
+    UI_PrintStringSmallNormal(Version, 0, 127, 6);
+    ST7565_BlitFullScreen();
+#endif
 }
